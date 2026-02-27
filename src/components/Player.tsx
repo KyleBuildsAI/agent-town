@@ -10,19 +10,25 @@ import { useHistoricalValue } from '../hooks/useHistoricalValue.ts';
 import { PlayerDescription } from '../../convex/aiTown/playerDescription.ts';
 import { WorldMap } from '../../convex/aiTown/worldMap.ts';
 import { ServerGame } from '../hooks/serverGame.ts';
+import { useQuery } from 'convex/react';
+import { api } from '../../convex/_generated/api.js';
 
 export type SelectElement = (element?: { kind: 'player'; id: GameId<'players'> }) => void;
 
 const logged = new Set<string>();
 
+const SPEECH_DISPLAY_MS = 8000;
+
 export const Player = ({
   game,
+  worldId,
   isViewer,
   player,
   onClick,
   historicalTime,
 }: {
   game: ServerGame;
+  worldId: Id<'worlds'>;
   isViewer: boolean;
   player: ServerPlayer;
 
@@ -62,6 +68,32 @@ export const Player = ({
     !![...game.world.agents.values()].find(
       (a) => a.playerId === player.id && !!a.inProgressOperation,
     );
+
+  // Find active conversation for speech bubble
+  const activeConversation = [...game.world.conversations.values()].find((c) =>
+    c.participants.has(player.id),
+  );
+  const latestMsg = useQuery(
+    api.messages.latestMessage,
+    activeConversation ? { worldId, conversationId: activeConversation.id } : 'skip',
+  );
+  // Show speech text only for messages authored by this player and within the display window
+  const speechText =
+    latestMsg && latestMsg.author === player.id && Date.now() - latestMsg.timestamp < SPEECH_DISPLAY_MS
+      ? latestMsg.text
+      : undefined;
+
+  // Derive status for indicator dot
+  const hasActivity = player.activity && player.activity.until > (historicalTime ?? Date.now());
+  const status: 'idle' | 'walking' | 'conversation' | 'activity' = activeConversation
+    ? 'conversation'
+    : hasActivity
+      ? 'activity'
+      : historicalLocation.speed > 0
+        ? 'walking'
+        : 'idle';
+
+  const playerName = game.playerDescriptions.get(player.id)?.name;
   const tileDim = game.worldMap.tileDim;
   const historicalFacing = { dx: historicalLocation.dx, dy: historicalLocation.dy };
   return (
@@ -73,12 +105,15 @@ export const Player = ({
         isMoving={historicalLocation.speed > 0}
         isThinking={isThinking}
         isSpeaking={isSpeaking}
+        speechText={speechText}
         emoji={
           player.activity && player.activity.until > (historicalTime ?? Date.now())
             ? player.activity?.emoji
             : undefined
         }
         isViewer={isViewer}
+        playerName={playerName}
+        status={status}
         textureUrl={character.textureUrl}
         spritesheetData={character.spritesheetData}
         speed={character.speed}

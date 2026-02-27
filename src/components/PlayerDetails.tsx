@@ -48,6 +48,15 @@ export default function PlayerDetails({
 
   const playerDescription = playerId && game.playerDescriptions.get(playerId);
 
+  const goals = useQuery(
+    api.playerInfo.playerGoals,
+    playerId ? { worldId, playerId } : 'skip',
+  );
+  const relationships = useQuery(
+    api.playerInfo.playerRelationships,
+    playerId ? { worldId, playerId } : 'skip',
+  );
+
   const startConversation = useSendInput(engineId, 'startConversation');
   const acceptInvite = useSendInput(engineId, 'acceptInvite');
   const rejectInvite = useSendInput(engineId, 'rejectInvite');
@@ -233,6 +242,44 @@ export default function PlayerDetails({
           )}
         </p>
       </div>
+      {!isMe && goals && (goals.currentTask || goals.shortTerm.length > 0) && (
+        <div className="box my-4">
+          <h2 className="bg-brown-700 text-base text-center p-1">Goals</h2>
+          <div className="bg-brown-700 text-brown-100 p-2 text-sm">
+            {goals.currentTask && (
+              <p className="mb-2">
+                <strong>Doing:</strong> {goals.currentTask.description}
+              </p>
+            )}
+            {goals.shortTerm.length > 0 && (
+              <div>
+                <strong>Working toward:</strong>
+                <ul className="list-disc ml-4 mt-1">
+                  {goals.shortTerm.map((g, i) => (
+                    <li key={i}>{g.description}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+      {!isMe && relationships && relationships.length > 0 && (
+        <div className="box my-4">
+          <h2 className="bg-brown-700 text-base text-center p-1">Relationships</h2>
+          <div className="bg-brown-700 text-brown-100 p-2 text-sm">
+            {relationships.map((r) => (
+              <div key={r.playerId} className="mb-2">
+                <span className="mr-1">{sentimentEmoji(r.sentiment)}</span>
+                <strong>{r.name}</strong>
+                {r.recentObservation && (
+                  <p className="ml-5 text-xs opacity-80 mt-0.5">{r.recentObservation}</p>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
       {!isMe && playerConversation && playerStatus?.kind === 'participating' && (
         <Messages
           worldId={worldId}
@@ -260,4 +307,12 @@ export default function PlayerDetails({
       )}
     </>
   );
+}
+
+function sentimentEmoji(val: number): string {
+  if (val > 0.5) return '💚';
+  if (val > 0.1) return '🙂';
+  if (val > -0.1) return '😐';
+  if (val > -0.5) return '😟';
+  return '💔';
 }

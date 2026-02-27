@@ -119,6 +119,7 @@ export const PixiGame = (props: {
         <Player
           key={`player-${p.id}`}
           game={props.game}
+          worldId={props.worldId}
           player={p}
           isViewer={p.id === humanPlayerId}
           onClick={props.setSelectedElement}

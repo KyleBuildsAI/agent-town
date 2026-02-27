@@ -3,6 +3,28 @@ import { mutation, query } from './_generated/server';
 import { insertInput } from './aiTown/insertInput';
 import { conversationId, playerId } from './aiTown/ids';
 
+export const latestMessage = query({
+  args: {
+    worldId: v.id('worlds'),
+    conversationId,
+  },
+  handler: async (ctx, args) => {
+    const message = await ctx.db
+      .query('messages')
+      .withIndex('conversationId', (q) =>
+        q.eq('worldId', args.worldId).eq('conversationId', args.conversationId),
+      )
+      .order('desc')
+      .first();
+    if (!message) return null;
+    return {
+      text: message.text,
+      author: message.author,
+      timestamp: message._creationTime,
+    };
+  },
+});
+
 export const listMessages = query({
   args: {
     worldId: v.id('worlds'),
