@@ -4,6 +4,9 @@ const OPENAI_EMBEDDING_DIMENSION = 1536;
 const TOGETHER_EMBEDDING_DIMENSION = 768;
 const OLLAMA_EMBEDDING_DIMENSION = 1024;
 
+// Set this to match your embedding provider. Anthropic doesn't offer embeddings,
+// so if using Anthropic for chat, keep Ollama for embeddings.
+// If using LiteLLM with OpenAI embeddings, change to OPENAI_EMBEDDING_DIMENSION.
 export const EMBEDDING_DIMENSION: number = OLLAMA_EMBEDDING_DIMENSION;
 
 export function detectMismatchedLLMProvider() {
@@ -35,7 +38,7 @@ export function detectMismatchedLLMProvider() {
 }
 
 export interface LLMConfig {
-  provider: 'openai' | 'together' | 'ollama' | 'custom';
+  provider: 'openai' | 'together' | 'ollama' | 'custom' | 'anthropic' | 'litellm';
   url: string; // Should not have a trailing slash
   chatModel: string;
   embeddingModel: string;
@@ -70,6 +73,38 @@ export function getLLMConfig(): LLMConfig {
         process.env.TOGETHER_EMBEDDING_MODEL ?? 'togethercomputer/m2-bert-80M-8k-retrieval',
       stopWords: ['<|eot_id|>'],
       apiKey: process.env.TOGETHER_API_KEY,
+    };
+  }
+  // Anthropic (Claude) — native Messages API
+  // Embeddings fall back to Ollama since Anthropic doesn't offer an embedding API.
+  if (provider ? provider === 'anthropic' : process.env.ANTHROPIC_API_KEY) {
+    if (EMBEDDING_DIMENSION !== OLLAMA_EMBEDDING_DIMENSION) {
+      console.warn(
+        'Anthropic uses Ollama for embeddings. EMBEDDING_DIMENSION should be ' +
+          OLLAMA_EMBEDDING_DIMENSION,
+      );
+    }
+    return {
+      provider: 'anthropic',
+      url: process.env.ANTHROPIC_API_URL ?? 'https://api.anthropic.com',
+      chatModel: process.env.ANTHROPIC_CHAT_MODEL ?? 'claude-sonnet-4-20250514',
+      embeddingModel: process.env.OLLAMA_EMBEDDING_MODEL ?? 'mxbai-embed-large',
+      stopWords: [],
+      apiKey: process.env.ANTHROPIC_API_KEY,
+    };
+  }
+  // LiteLLM proxy — OpenAI-compatible API that routes to multiple backends.
+  // Configure tiered routing in LiteLLM itself (e.g. cheap model for simple tasks,
+  // Claude for complex conversations). Set LITELLM_CHAT_MODEL to the model name
+  // that LiteLLM should route to.
+  if (provider ? provider === 'litellm' : process.env.LITELLM_API_URL) {
+    return {
+      provider: 'litellm',
+      url: (process.env.LITELLM_API_URL ?? 'http://127.0.0.1:4000').replace(/\/$/, ''),
+      chatModel: process.env.LITELLM_CHAT_MODEL ?? 'gpt-4o-mini',
+      embeddingModel: process.env.LITELLM_EMBEDDING_MODEL ?? 'text-embedding-ada-002',
+      stopWords: [],
+      apiKey: process.env.LITELLM_API_KEY,
     };
   }
   if (process.env.LLM_API_URL) {
@@ -109,12 +144,15 @@ export function getLLMConfig(): LLMConfig {
   };
 }
 
-const AuthHeaders = (): Record<string, string> =>
-  getLLMConfig().apiKey
-    ? {
-        Authorization: 'Bearer ' + getLLMConfig().apiKey,
-      }
-    : {};
+const AuthHeaders = (config?: LLMConfig): Record<string, string> => {
+  const c = config ?? getLLMConfig();
+  if (c.provider === 'anthropic') {
+    return c.apiKey
+      ? { 'x-api-key': c.apiKey, 'anthropic-version': '2023-06-01' }
+      : {};
+  }
+  return c.apiKey ? { Authorization: 'Bearer ' + c.apiKey } : {};
+};
 
 // Overload for non-streaming
 export async function chatCompletion(
@@ -147,11 +185,15 @@ export async function chatCompletion(
     retries,
     ms,
   } = await retryWithBackoff(async () => {
+    // Anthropic uses a different API format (Messages API)
+    if (config.provider === 'anthropic') {
+      return anthropicFetchChat(body, config, stopWords);
+    }
     const result = await fetch(config.url + '/v1/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        ...AuthHeaders(),
+        ...AuthHeaders(config),
       },
 
       body: JSON.stringify(body),
@@ -202,9 +244,109 @@ export async function tryPullOllama(model: string, error: string) {
   }
 }
 
+// Convert OpenAI-style messages to Anthropic Messages API format and fetch
+async function anthropicFetchChat(
+  body: any,
+  config: LLMConfig,
+  stopWords: string[],
+): Promise<string | ChatCompletionContent> {
+  // Extract system messages — Anthropic takes system as a top-level field
+  const systemMessages = body.messages.filter((m: LLMMessage) => m.role === 'system');
+  const nonSystemMessages = body.messages
+    .filter((m: LLMMessage) => m.role !== 'system')
+    .map((m: LLMMessage) => ({
+      role: m.role === 'function' ? 'user' : m.role,
+      content: m.content ?? '',
+    }));
+
+  const anthropicBody: Record<string, any> = {
+    model: body.model ?? config.chatModel,
+    max_tokens: body.max_tokens ?? 1024,
+    messages: nonSystemMessages,
+  };
+  if (systemMessages.length > 0) {
+    anthropicBody.system = systemMessages.map((m: LLMMessage) => m.content).join('\n\n');
+  }
+  if (body.temperature != null) anthropicBody.temperature = body.temperature;
+  if (body.top_p != null) anthropicBody.top_p = body.top_p;
+  if (body.stream) anthropicBody.stream = true;
+  if (body.stop) {
+    anthropicBody.stop_sequences = typeof body.stop === 'string' ? [body.stop] : body.stop;
+  }
+
+  const result = await fetch(config.url + '/v1/messages', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      ...AuthHeaders(config),
+    },
+    body: JSON.stringify(anthropicBody),
+  });
+  if (!result.ok) {
+    const error = await result.text();
+    console.error({ error });
+    throw {
+      retry: result.status === 429 || result.status >= 500,
+      error: new Error(`Anthropic chat failed with code ${result.status}: ${error}`),
+    };
+  }
+  if (body.stream) {
+    // Transform Anthropic SSE stream to OpenAI-compatible format for ChatCompletionContent
+    const anthropicStream = result.body!;
+    const transformedStream = new ReadableStream<Uint8Array>({
+      async start(controller) {
+        const reader = anthropicStream.getReader();
+        const encoder = new TextEncoder();
+        const decoder = new TextDecoder();
+        try {
+          while (true) {
+            const { value, done } = await reader.read();
+            if (done) {
+              controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+              controller.close();
+              break;
+            }
+            const text = decoder.decode(value);
+            const lines = text.split('\n');
+            for (const line of lines) {
+              if (line.startsWith('data: ')) {
+                try {
+                  const data = JSON.parse(line.substring(6));
+                  if (data.type === 'content_block_delta' && data.delta?.text) {
+                    const chunk = {
+                      choices: [{ delta: { content: data.delta.text } }],
+                    };
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify(chunk)}\n\n`));
+                  }
+                } catch {
+                  // Skip non-JSON data lines
+                }
+              }
+            }
+          }
+        } catch (e) {
+          controller.error(e);
+        } finally {
+          reader.releaseLock();
+        }
+      },
+    });
+    return new ChatCompletionContent(transformedStream, stopWords);
+  } else {
+    const json = await result.json();
+    const content = json.content?.[0]?.text;
+    if (content === undefined) {
+      throw new Error('Unexpected result from Anthropic: ' + JSON.stringify(json));
+    }
+    console.log(content);
+    return content;
+  }
+}
+
 export async function fetchEmbeddingBatch(texts: string[]) {
   const config = getLLMConfig();
-  if (config.provider === 'ollama') {
+  // Anthropic doesn't offer embeddings — fall back to Ollama
+  if (config.provider === 'ollama' || config.provider === 'anthropic') {
     return {
       ollama: true as const,
       embeddings: await Promise.all(

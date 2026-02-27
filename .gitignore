@@ -42,3 +42,6 @@ dist
 
 convex-local*
 convex_local*
+
+# Kenney asset staging (extracted PNGs are in public/assets/kenney/)
+kenney-assets/
