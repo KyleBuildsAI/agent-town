@@ -68,6 +68,11 @@ export const ACTIVITIES = [
   { description: 'reading a book', emoji: '📖', duration: 60_000 },
   { description: 'daydreaming', emoji: '🤔', duration: 60_000 },
   { description: 'gardening', emoji: '🥕', duration: 60_000 },
+  { description: 'writing in a journal', emoji: '📝', duration: 45_000 },
+  { description: 'working on a project', emoji: '🔨', duration: 90_000 },
+  { description: 'cooking', emoji: '🍳', duration: 60_000 },
+  { description: 'meditating', emoji: '🧘', duration: 30_000 },
+  { description: 'sketching', emoji: '🎨', duration: 60_000 },
 ];
 
 export const ENGINE_ACTION_DURATION = 30000;

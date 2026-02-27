@@ -7,6 +7,8 @@ import { asyncMap } from '../util/asyncMap';
 import { GameId, agentId, conversationId, playerId } from '../aiTown/ids';
 import { SerializedPlayer } from '../aiTown/player';
 import { memoryFields } from './schema';
+import { extractRelationshipMemories } from './relationships';
+import { reflectOnGoals } from './goals';
 
 // How long to wait before updating a memory's last access time.
 export const MEMORY_ACCESS_THROTTLE = 300_000; // In ms
@@ -65,7 +67,7 @@ export async function rememberConversation(
   const description = `Conversation with ${otherPlayer.name} at ${new Date(
     data.conversation._creationTime,
   ).toLocaleString()}: ${content}`;
-  const importance = await calculateImportance(description);
+  const { importance, valence } = await calculateImportanceAndValence(description);
   const { embedding } = await fetchEmbedding(description);
   authors.delete(player.id as GameId<'players'>);
   await ctx.runMutation(selfInternal.insertMemory, {
@@ -73,6 +75,7 @@ export async function rememberConversation(
     playerId: player.id,
     description,
     importance,
+    emotionalValence: valence,
     lastAccess: messages[messages.length - 1]._creationTime,
     data: {
       type: 'conversation',
@@ -81,6 +84,45 @@ export async function rememberConversation(
     },
     embedding,
   });
+
+  // Extract relationship observations about the other player
+  const otherPlayerId = otherPlayer.id as GameId<'players'>;
+  await extractRelationshipMemories(
+    ctx,
+    worldId,
+    agentId,
+    playerId,
+    otherPlayerId,
+    player.name,
+    otherPlayer.name,
+    description,
+  );
+
+  // Update goals based on this conversation
+  const existingGoals = await ctx.runQuery(internal.agent.goals.loadGoals, {
+    worldId,
+    agentId,
+  });
+  if (existingGoals) {
+    const goalUpdates = await reflectOnGoals(
+      ctx,
+      worldId,
+      agentId,
+      player.name,
+      description,
+      existingGoals.goals,
+    );
+    await ctx.runMutation(internal.agent.goals.updateGoals, {
+      worldId,
+      agentId,
+      goals: {
+        longTerm: existingGoals.goals.longTerm,
+        shortTerm: goalUpdates.shortTerm,
+        currentTask: goalUpdates.currentTask,
+      },
+    });
+  }
+
   await reflectOnMemories(ctx, worldId, playerId);
   return description;
 }
@@ -204,7 +246,9 @@ export const rankAndTouchMemories = internalMutation({
     // so we don't miss them in case they were a little less relevant.
     const recencyScore = relatedMemories.map((memory) => {
       const hoursSinceAccess = (ts - memory.lastAccess) / 1000 / 60 / 60;
-      return 0.99 ** Math.floor(hoursSinceAccess);
+      // Important memories decay slower: high (7+) ~6 day half-life, mid (4-6) ~4 days, low ~29 hours
+      const decayRate = memory.importance >= 7 ? 0.995 : memory.importance >= 4 ? 0.993 : 0.99;
+      return decayRate ** Math.floor(hoursSinceAccess);
     });
     const relevanceRange = makeRange(args.candidates.map((c) => c._score));
     const importanceRange = makeRange(relatedMemories.map((m) => m.importance));
@@ -243,29 +287,44 @@ export const loadMessages = internalQuery({
   },
 });
 
-async function calculateImportance(description: string) {
-  const { content: importanceRaw } = await chatCompletion({
+async function calculateImportanceAndValence(
+  description: string,
+): Promise<{ importance: number; valence: number }> {
+  const { content: raw } = await chatCompletion({
     messages: [
       {
         role: 'user',
-        content: `On the scale of 0 to 9, where 0 is purely mundane (e.g., brushing teeth, making bed) and 9 is extremely poignant (e.g., a break up, college acceptance), rate the likely poignancy of the following piece of memory.
-      Memory: ${description}
-      Answer on a scale of 0 to 9. Respond with number only, e.g. "5"`,
+        content: `Rate this memory on two scales:
+1. Importance (0-9): 0 = mundane (brushing teeth), 9 = extremely poignant (breakup, college acceptance)
+2. Emotional valence (-1.0 to 1.0): -1.0 = very negative, 0 = neutral, 1.0 = very positive
+
+Memory: ${description}
+
+Respond with two numbers separated by a comma only, e.g. "5, 0.3"`,
       },
     ],
     temperature: 0.0,
-    max_tokens: 1,
+    max_tokens: 10,
   });
 
-  let importance = parseFloat(importanceRaw);
+  const parts = raw.split(',').map((s) => parseFloat(s.trim()));
+  let importance = parts[0];
+  let valence = parts[1] ?? 0;
+
   if (isNaN(importance)) {
-    importance = +(importanceRaw.match(/\d+/)?.[0] ?? NaN);
+    importance = +(raw.match(/\d+/)?.[0] ?? NaN);
   }
   if (isNaN(importance)) {
-    console.debug('Could not parse memory importance from: ', importanceRaw);
+    console.debug('Could not parse memory importance from: ', raw);
     importance = 5;
   }
-  return importance;
+  if (isNaN(valence)) {
+    valence = 0;
+  }
+  return {
+    importance: Math.min(9, Math.max(0, Math.round(importance))),
+    valence: Math.min(1, Math.max(-1, valence)),
+  };
 }
 
 const { embeddingId: _embeddingId, ...memoryFieldsWithoutEmbeddingId } = memoryFields;
@@ -372,7 +431,7 @@ async function reflectOnMemories(
     const insights = JSON.parse(reflection) as { insight: string; statementIds: number[] }[];
     const memoriesToSave = await asyncMap(insights, async (item) => {
       const relatedMemoryIds = item.statementIds.map((idx: number) => memories[idx]._id);
-      const importance = await calculateImportance(item.insight);
+      const { importance } = await calculateImportanceAndValence(item.insight);
       const { embedding } = await fetchEmbedding(item.insight);
       console.debug('adding reflection memory...', item.insight);
       return {

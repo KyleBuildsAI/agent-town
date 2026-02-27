@@ -339,8 +339,9 @@ export const findConversationCandidate = internalQuery({
     worldId: v.id('worlds'),
     player: v.object(serializedPlayer),
     otherFreePlayers: v.array(v.object(serializedPlayer)),
+    agentId: v.optional(agentId),
   },
-  handler: async (ctx, { now, worldId, player, otherFreePlayers }) => {
+  handler: async (ctx, { now, worldId, player, otherFreePlayers, agentId: agentIdArg }) => {
     const { position } = player;
     const candidates = [];
 
@@ -358,11 +359,39 @@ export const findConversationCandidate = internalQuery({
           continue;
         }
       }
-      candidates.push({ id: otherPlayer.id, position });
+
+      // Check relationship memories for emotional warmth toward this player
+      let relationshipScore = 0;
+      if (agentIdArg) {
+        const relMemories = await ctx.db
+          .query('memories')
+          .withIndex('playerId_type', (q) =>
+            q.eq('playerId', player.id).eq('data.type', 'relationship'),
+          )
+          .order('desc')
+          .take(10);
+        // Find memories about this specific player
+        for (const mem of relMemories) {
+          if (mem.data.type === 'relationship' && mem.data.playerId === otherPlayer.id) {
+            relationshipScore += mem.emotionalValence ?? 0;
+          }
+        }
+      }
+
+      candidates.push({
+        id: otherPlayer.id,
+        position: otherPlayer.position,
+        dist: distance(otherPlayer.position, position),
+        relationshipScore,
+      });
     }
 
-    // Sort by distance and take the nearest candidate.
-    candidates.sort((a, b) => distance(a.position, position) - distance(b.position, position));
+    // Sort by composite: proximity + relationship warmth
+    candidates.sort((a, b) => {
+      const scoreA = -a.dist + a.relationshipScore * 3;
+      const scoreB = -b.dist + b.relationshipScore * 3;
+      return scoreB - scoreA;
+    });
     return candidates[0]?.id;
   },
 });

@@ -7,6 +7,7 @@ import { api, internal } from '../_generated/api';
 import * as embeddingsCache from './embeddingsCache';
 import { GameId, conversationId, playerId } from '../aiTown/ids';
 import { NUM_MEMORIES_TO_SEARCH } from '../constants';
+import { Doc } from '../_generated/dataModel';
 
 const selfInternal = internal.agent.conversation;
 
@@ -17,36 +18,40 @@ export async function startConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, agent, otherAgent, lastConversation } = await ctx.runQuery(
-    selfInternal.queryPromptData,
-    {
+  const { player, otherPlayer, agent, otherAgent, lastConversation, agentGoals } =
+    await ctx.runQuery(selfInternal.queryPromptData, {
       worldId,
       playerId,
       otherPlayerId,
       conversationId,
-    },
-  );
-  const embedding = await embeddingsCache.fetch(
-    ctx,
-    `${player.name} is talking to ${otherPlayer.name}`,
-  );
+    });
 
-  const memories = await memory.searchMemories(
-    ctx,
-    player.id as GameId<'players'>,
-    embedding,
-    Number(process.env.NUM_MEMORIES_TO_SEARCH) || NUM_MEMORIES_TO_SEARCH,
-  );
+  // Build goal-aware search queries for more relevant memory retrieval
+  const searchQueries = [`${player.name} is talking to ${otherPlayer.name}`];
+  if (agentGoals?.goals.currentTask) {
+    searchQueries.push(agentGoals.goals.currentTask.description);
+  } else if (agentGoals?.goals.shortTerm?.length) {
+    const activeGoal = agentGoals.goals.shortTerm.find(
+      (g: { status: string }) => g.status === 'active',
+    );
+    if (activeGoal) searchQueries.push(activeGoal.description);
+  }
 
-  const memoryWithOtherPlayer = memories.find(
+  const { embeddings } = await embeddingsCache.fetchBatch(ctx, searchQueries);
+
+  // Search with each query and merge results
+  const n = Number(process.env.NUM_MEMORIES_TO_SEARCH) || NUM_MEMORIES_TO_SEARCH;
+  const allMemories = await searchMemoriesMultiQuery(ctx, player.id as GameId<'players'>, embeddings, n);
+
+  const memoryWithOtherPlayer = allMemories.find(
     (m) => m.data.type === 'conversation' && m.data.playerIds.includes(otherPlayerId),
   );
   const prompt = [
     `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,
   ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null, agentGoals));
   prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
-  prompt.push(...relatedMemoriesPrompt(memories));
+  prompt.push(...relatedMemoriesPrompt(allMemories));
   if (memoryWithOtherPlayer) {
     prompt.push(
       `Be sure to include some detail or question about a previous conversation in your greeting.`,
@@ -82,7 +87,7 @@ export async function continueConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, conversation, agent, otherAgent } = await ctx.runQuery(
+  const { player, otherPlayer, conversation, agent, otherAgent, agentGoals } = await ctx.runQuery(
     selfInternal.queryPromptData,
     {
       worldId,
@@ -93,16 +98,20 @@ export async function continueConversationMessage(
   );
   const now = Date.now();
   const started = new Date(conversation.created);
-  const embedding = await embeddingsCache.fetch(
-    ctx,
-    `What do you think about ${otherPlayer.name}?`,
-  );
-  const memories = await memory.searchMemories(ctx, player.id as GameId<'players'>, embedding, 3);
+
+  // Goal-aware memory search
+  const searchQueries = [`What do you think about ${otherPlayer.name}?`];
+  if (agentGoals?.goals.currentTask) {
+    searchQueries.push(agentGoals.goals.currentTask.description);
+  }
+  const { embeddings } = await embeddingsCache.fetchBatch(ctx, searchQueries);
+  const memories = await searchMemoriesMultiQuery(ctx, player.id as GameId<'players'>, embeddings, 3);
+
   const prompt = [
     `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
     `The conversation started at ${started.toLocaleString()}. It's now ${now.toLocaleString()}.`,
   ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null));
+  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null, agentGoals));
   prompt.push(...relatedMemoriesPrompt(memories));
   prompt.push(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
@@ -186,11 +195,24 @@ function agentPrompts(
   otherPlayer: { name: string },
   agent: { identity: string; plan: string } | null,
   otherAgent: { identity: string; plan: string } | null,
+  goals?: Doc<'agentGoals'> | null,
 ): string[] {
   const prompt = [];
   if (agent) {
     prompt.push(`About you: ${agent.identity}`);
-    prompt.push(`Your goals for the conversation: ${agent.plan}`);
+    if (goals?.goals) {
+      const activeGoals = goals.goals.shortTerm.filter((g) => g.status === 'active');
+      if (activeGoals.length > 0) {
+        prompt.push(`Your current goals: ${activeGoals.map((g) => g.description).join('; ')}`);
+      } else {
+        prompt.push(`Your goals for the conversation: ${agent.plan}`);
+      }
+      if (goals.goals.currentTask) {
+        prompt.push(`You are currently trying to: ${goals.goals.currentTask.description}`);
+      }
+    } else {
+      prompt.push(`Your goals for the conversation: ${agent.plan}`);
+    }
   }
   if (otherAgent) {
     prompt.push(`About ${otherPlayer.name}: ${otherAgent.identity}`);
@@ -330,6 +352,13 @@ export const queryPromptData = internalQuery({
         throw new Error(`Conversation ${lastTogether.conversationId} not found`);
       }
     }
+
+    // Load agent goals if available
+    const agentGoals = await ctx.db
+      .query('agentGoals')
+      .withIndex('agentId', (q) => q.eq('worldId', args.worldId).eq('agentId', agent.id))
+      .first();
+
     return {
       player: { name: playerDescription.name, ...player },
       otherPlayer: { name: otherPlayerDescription.name, ...otherPlayer },
@@ -341,9 +370,31 @@ export const queryPromptData = internalQuery({
         ...otherAgent,
       },
       lastConversation,
+      agentGoals,
     };
   },
 });
+
+async function searchMemoriesMultiQuery(
+  ctx: ActionCtx,
+  playerId: GameId<'players'>,
+  embeddings: number[][],
+  n: number,
+): Promise<memory.Memory[]> {
+  const seenIds = new Set<string>();
+  const allMemories: memory.Memory[] = [];
+  const perQuery = Math.max(2, Math.ceil(n / embeddings.length));
+  for (const emb of embeddings) {
+    const results = await memory.searchMemories(ctx, playerId, emb, perQuery);
+    for (const m of results) {
+      if (!seenIds.has(m._id)) {
+        seenIds.add(m._id);
+        allMemories.push(m);
+      }
+    }
+  }
+  return allMemories.slice(0, n + 2);
+}
 
 function stopWords(otherPlayer: string, player: string) {
   // These are the words we ask the LLM to stop on. OpenAI only supports 4.

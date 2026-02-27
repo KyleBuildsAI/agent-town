@@ -103,6 +103,31 @@ export const agentDoSomething = internalAction({
     const { player, agent } = args;
     const map = new WorldMap(args.map);
     const now = Date.now();
+
+    // Lazy goal initialization: create goals from agent description if they don't exist yet
+    let agentGoals = await ctx.runQuery(internal.agent.goals.loadGoals, {
+      worldId: args.worldId,
+      agentId: agent.id,
+    });
+    if (!agentGoals) {
+      const agentDesc = await ctx.runQuery(internal.agent.goals.loadAgentDescription, {
+        worldId: args.worldId,
+        agentId: agent.id,
+      });
+      if (agentDesc) {
+        await ctx.runMutation(internal.agent.goals.initializeGoals, {
+          worldId: args.worldId,
+          agentId: agent.id,
+          playerId: player.id,
+          longTermGoals: [{ description: agentDesc.plan, source: 'character' as const }],
+        });
+        agentGoals = await ctx.runQuery(internal.agent.goals.loadGoals, {
+          worldId: args.worldId,
+          agentId: agent.id,
+        });
+      }
+    }
+
     // Don't try to start a new conversation if we were just in one.
     const justLeftConversation =
       agent.lastConversation && now < agent.lastConversation + CONVERSATION_COOLDOWN;
@@ -125,8 +150,8 @@ export const agentDoSomething = internalAction({
         });
         return;
       } else {
-        // TODO: have LLM choose the activity & emoji
-        const activity = ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
+        // Select activity based on current goals (keyword matching, no LLM call)
+        const activity = selectActivityForGoals(agentGoals);
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -152,6 +177,7 @@ export const agentDoSomething = internalAction({
             worldId: args.worldId,
             player: args.player,
             otherFreePlayers: args.otherFreePlayers,
+            agentId: agent.id,
           });
 
     // TODO: We hit a lot of OCC errors on sending inputs in this file. It's
@@ -168,6 +194,39 @@ export const agentDoSomething = internalAction({
     });
   },
 });
+
+function selectActivityForGoals(
+  agentGoals: { goals: { currentTask?: { description: string } } } | null,
+) {
+  if (agentGoals?.goals.currentTask) {
+    const lower = agentGoals.goals.currentTask.description.toLowerCase();
+    if (lower.includes('read') || lower.includes('learn') || lower.includes('study') || lower.includes('book')) {
+      return ACTIVITIES.find((a) => a.description === 'reading a book')!;
+    }
+    if (lower.includes('think') || lower.includes('plan') || lower.includes('reflect') || lower.includes('decide')) {
+      return ACTIVITIES.find((a) => a.description === 'daydreaming')!;
+    }
+    if (lower.includes('garden') || lower.includes('grow') || lower.includes('plant') || lower.includes('nature')) {
+      return ACTIVITIES.find((a) => a.description === 'gardening')!;
+    }
+    if (lower.includes('write') || lower.includes('journal') || lower.includes('note') || lower.includes('record')) {
+      return ACTIVITIES.find((a) => a.description === 'writing in a journal')!;
+    }
+    if (lower.includes('build') || lower.includes('craft') || lower.includes('make') || lower.includes('fix') || lower.includes('work')) {
+      return ACTIVITIES.find((a) => a.description === 'working on a project')!;
+    }
+    if (lower.includes('cook') || lower.includes('bake') || lower.includes('food') || lower.includes('recipe')) {
+      return ACTIVITIES.find((a) => a.description === 'cooking')!;
+    }
+    if (lower.includes('meditat') || lower.includes('calm') || lower.includes('peace') || lower.includes('relax')) {
+      return ACTIVITIES.find((a) => a.description === 'meditating')!;
+    }
+    if (lower.includes('draw') || lower.includes('sketch') || lower.includes('paint') || lower.includes('art') || lower.includes('creat')) {
+      return ACTIVITIES.find((a) => a.description === 'sketching')!;
+    }
+  }
+  return ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
+}
 
 function wanderDestination(worldMap: WorldMap) {
   // Wander someonewhere at least one tile away from the edge.

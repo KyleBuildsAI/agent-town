@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { playerId, conversationId } from '../aiTown/ids';
+import { playerId, conversationId, agentId } from '../aiTown/ids';
 import { defineTable } from 'convex/server';
 import { EMBEDDING_DIMENSION } from '../util/llm';
 
@@ -9,6 +9,8 @@ export const memoryFields = {
   embeddingId: v.id('memoryEmbeddings'),
   importance: v.number(),
   lastAccess: v.number(),
+  // Emotional valence: -1.0 (very negative) to 1.0 (very positive), 0 = neutral
+  emotionalValence: v.optional(v.number()),
   data: v.union(
     // Setting up dynamics between players
     v.object({
@@ -29,6 +31,37 @@ export const memoryFields = {
     }),
   ),
 };
+
+export const goalFields = {
+  agentId,
+  playerId,
+  worldId: v.id('worlds'),
+  goals: v.object({
+    longTerm: v.array(
+      v.object({
+        description: v.string(),
+        source: v.union(v.literal('character'), v.literal('reflection')),
+      }),
+    ),
+    shortTerm: v.array(
+      v.object({
+        description: v.string(),
+        status: v.union(v.literal('active'), v.literal('completed'), v.literal('abandoned')),
+        createdAt: v.number(),
+        origin: v.optional(v.string()),
+      }),
+    ),
+    currentTask: v.optional(
+      v.object({
+        description: v.string(),
+        relatedGoalIndex: v.optional(v.number()),
+        startedAt: v.number(),
+      }),
+    ),
+  }),
+  lastUpdated: v.number(),
+};
+
 export const memoryTables = {
   memories: defineTable(memoryFields)
     .index('embeddingId', ['embeddingId'])
@@ -50,4 +83,7 @@ export const agentTables = {
     textHash: v.bytes(),
     embedding: v.array(v.float64()),
   }).index('text', ['textHash']),
+  agentGoals: defineTable(goalFields)
+    .index('agentId', ['worldId', 'agentId'])
+    .index('playerId', ['worldId', 'playerId']),
 };
