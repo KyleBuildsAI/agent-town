@@ -14,6 +14,7 @@ import { DebugPath } from './DebugPath.tsx';
 import { PositionIndicator } from './PositionIndicator.tsx';
 import { SHOW_DEBUG_UI } from './Game.tsx';
 import { ServerGame } from '../hooks/serverGame.ts';
+import { WorldItem } from './WorldItem.tsx';
 
 export const PixiGame = (props: {
   worldId: Id<'worlds'>;
@@ -32,6 +33,9 @@ export const PixiGame = (props: {
   const humanPlayerId = [...props.game.world.players.values()].find(
     (p) => p.human === humanTokenIdentifier,
   )?.id;
+
+  // Subscribe to world items
+  const worldItems = useQuery(api.world.worldItems, { worldId: props.worldId }) ?? [];
 
   const moveTo = useSendInput(props.engineId, 'moveTo');
 
@@ -82,7 +86,7 @@ export const PixiGame = (props: {
   const { width, height, tileDim } = props.game.worldMap;
   const players = [...props.game.world.players.values()];
 
-  // Zoom on the user’s avatar when it is created
+  // Zoom on the user's avatar when it is created
   useEffect(() => {
     if (!viewportRef.current || humanPlayerId === undefined) return;
 
@@ -107,6 +111,10 @@ export const PixiGame = (props: {
         onpointerup={onMapPointerUp}
         onpointerdown={onMapPointerDown}
       />
+      {/* Render world items between map and players */}
+      {worldItems.map((item) => (
+        <WorldItem key={`item-${item.id}`} item={item} tileDim={tileDim} />
+      ))}
       {players.map(
         (p) =>
           // Only show the path for the human player in non-debug mode.

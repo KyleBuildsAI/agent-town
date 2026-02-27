@@ -15,6 +15,23 @@ const animatedSprite = {
 };
 export type AnimatedSprite = ObjectType<typeof animatedSprite>;
 
+const zoneBounds = v.object({
+  x: v.number(),
+  y: v.number(),
+  width: v.number(),
+  height: v.number(),
+});
+
+const zone = {
+  id: v.string(),
+  name: v.string(),
+  description: v.string(),
+  type: v.union(v.literal('building'), v.literal('outdoor'), v.literal('shop')),
+  bounds: zoneBounds,
+  spawnItems: v.optional(v.array(v.string())),
+};
+export type Zone = ObjectType<typeof zone>;
+
 export const serializedWorldMap = {
   width: v.number(),
   height: v.number(),
@@ -29,6 +46,9 @@ export const serializedWorldMap = {
   bgTiles: v.array(v.array(v.array(v.number()))),
   objectTiles: v.array(tileLayer),
   animatedSprites: v.array(v.object(animatedSprite)),
+
+  // Named map zones (optional for backwards compatibility)
+  zones: v.optional(v.array(v.object(zone))),
 };
 export type SerializedWorldMap = ObjectType<typeof serializedWorldMap>;
 
@@ -45,6 +65,7 @@ export class WorldMap {
   bgTiles: TileLayer[];
   objectTiles: TileLayer[];
   animatedSprites: AnimatedSprite[];
+  zones: Zone[];
 
   constructor(serialized: SerializedWorldMap) {
     this.width = serialized.width;
@@ -56,6 +77,21 @@ export class WorldMap {
     this.bgTiles = serialized.bgTiles;
     this.objectTiles = serialized.objectTiles;
     this.animatedSprites = serialized.animatedSprites;
+    this.zones = serialized.zones ?? [];
+  }
+
+  getZoneAt(x: number, y: number): Zone | undefined {
+    return this.zones.find(
+      (z) =>
+        x >= z.bounds.x &&
+        x < z.bounds.x + z.bounds.width &&
+        y >= z.bounds.y &&
+        y < z.bounds.y + z.bounds.height,
+    );
+  }
+
+  getZoneById(id: string): Zone | undefined {
+    return this.zones.find((z) => z.id === id);
   }
 
   serialize(): SerializedWorldMap {
@@ -69,6 +105,7 @@ export class WorldMap {
       bgTiles: this.bgTiles,
       objectTiles: this.objectTiles,
       animatedSprites: this.animatedSprites,
+      zones: this.zones,
     };
   }
 }

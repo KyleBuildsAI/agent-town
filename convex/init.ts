@@ -3,6 +3,7 @@ import { internal } from './_generated/api';
 import { DatabaseReader, MutationCtx, mutation } from './_generated/server';
 import { Descriptions } from '../data/characters';
 import * as map from '../data/gentle';
+import { ZONES } from '../data/zones';
 import { insertInput } from './aiTown/insertInput';
 import { Id } from './_generated/dataModel';
 import { createEngine } from './aiTown/main';
@@ -33,6 +34,21 @@ const init = mutation({
         await insertInput(ctx, worldStatus.worldId, 'createAgent', {
           descriptionIndex: i % Descriptions.length,
         });
+      }
+      // Seed initial items in each zone
+      for (const zone of ZONES) {
+        if (!zone.spawnItems || zone.spawnItems.length === 0) continue;
+        // Spawn 2 items per zone
+        for (let i = 0; i < 2; i++) {
+          const itemType = zone.spawnItems[i % zone.spawnItems.length];
+          await insertInput(ctx, worldStatus.worldId, 'spawnItem', {
+            itemType,
+            position: {
+              x: zone.bounds.x + Math.floor(Math.random() * zone.bounds.width),
+              y: zone.bounds.y + Math.floor(Math.random() * zone.bounds.height),
+            },
+          });
+        }
       }
     }
   },
@@ -78,6 +94,14 @@ async function getOrCreateDefaultWorld(ctx: MutationCtx) {
     bgTiles: map.bgtiles,
     objectTiles: map.objmap,
     animatedSprites: map.animatedsprites,
+    zones: ZONES.map((z) => ({
+      id: z.id,
+      name: z.name,
+      description: z.description,
+      type: z.type,
+      bounds: z.bounds,
+      spawnItems: z.spawnItems,
+    })),
   });
   await ctx.scheduler.runAfter(0, internal.aiTown.main.runStep, {
     worldId,

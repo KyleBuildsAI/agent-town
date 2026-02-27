@@ -54,6 +54,10 @@ export const serializedPlayer = {
   position: point,
   facing: vector,
   speed: v.number(),
+
+  // Inventory and economy (optional for backwards compatibility)
+  inventory: v.optional(v.array(v.string())),
+  gold: v.optional(v.number()),
 };
 export type SerializedPlayer = ObjectType<typeof serializedPlayer>;
 
@@ -69,6 +73,9 @@ export class Player {
   facing: Vector;
   speed: number;
 
+  inventory: string[];
+  gold: number;
+
   constructor(serialized: SerializedPlayer) {
     const { id, human, pathfinding, activity, lastInput, position, facing, speed } = serialized;
     this.id = parseGameId('players', id);
@@ -79,6 +86,8 @@ export class Player {
     this.position = position;
     this.facing = facing;
     this.speed = speed;
+    this.inventory = serialized.inventory ?? [];
+    this.gold = serialized.gold ?? 0;
   }
 
   tick(game: Game, now: number) {
@@ -249,7 +258,8 @@ export class Player {
   }
 
   serialize(): SerializedPlayer {
-    const { id, human, pathfinding, activity, lastInput, position, facing, speed } = this;
+    const { id, human, pathfinding, activity, lastInput, position, facing, speed, inventory, gold } =
+      this;
     return {
       id,
       human,
@@ -259,6 +269,8 @@ export class Player {
       position,
       facing,
       speed,
+      inventory,
+      gold,
     };
   }
 }

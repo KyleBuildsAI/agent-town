@@ -27,6 +27,23 @@ export const playerGoals = query({
   },
 });
 
+export const playerInventory = query({
+  args: {
+    worldId: v.id('worlds'),
+    playerId,
+  },
+  handler: async (ctx, args) => {
+    const world = await ctx.db.get(args.worldId);
+    if (!world) return null;
+    const player = world.players.find((p: any) => p.id === args.playerId);
+    if (!player) return null;
+    return {
+      inventory: player.inventory ?? [],
+      gold: player.gold ?? 0,
+    };
+  },
+});
+
 export const playerRelationships = query({
   args: {
     worldId: v.id('worlds'),

@@ -9,6 +9,7 @@ import { useSendInput } from '../hooks/sendInput';
 import { Player } from '../../convex/aiTown/player';
 import { GameId } from '../../convex/aiTown/ids';
 import { ServerGame } from '../hooks/serverGame';
+import { ITEM_TYPES } from '../../convex/aiTown/itemTypes';
 
 export default function PlayerDetails({
   worldId,
@@ -56,6 +57,18 @@ export default function PlayerDetails({
     api.playerInfo.playerRelationships,
     playerId ? { worldId, playerId } : 'skip',
   );
+  const inventory = useQuery(
+    api.playerInfo.playerInventory,
+    playerId ? { worldId, playerId } : 'skip',
+  );
+
+  // Find agent description for zone info
+  const agentDesc = playerId
+    ? [...game.agentDescriptions.values()].find((ad) => {
+        const agent = [...game.world.agents.values()].find((a) => a.playerId === playerId);
+        return agent && ad.agentId === agent.id;
+      })
+    : undefined;
 
   const startConversation = useSendInput(engineId, 'startConversation');
   const acceptInvite = useSendInput(engineId, 'acceptInvite');
@@ -140,6 +153,19 @@ export default function PlayerDetails({
   //   [...inflightInputs.values()].find((i) => i.name === inputName) ? ' opacity-50' : '';
 
   const pendingSuffix = (s: string) => '';
+
+  // Build inventory display
+  const inventoryItems = inventory?.inventory ?? [];
+  const itemCounts = new Map<string, number>();
+  for (const itemType of inventoryItems) {
+    itemCounts.set(itemType, (itemCounts.get(itemType) ?? 0) + 1);
+  }
+
+  // Get zone name for agent's home zone
+  const homeZoneName = agentDesc?.homeZone
+    ? game.worldMap.zones.find((z) => z.id === agentDesc.homeZone)?.name
+    : undefined;
+
   return (
     <>
       <div className="flex gap-4">
@@ -242,6 +268,42 @@ export default function PlayerDetails({
           )}
         </p>
       </div>
+      {/* Inventory & Economy section */}
+      {!isMe && inventory && (inventory.gold > 0 || inventoryItems.length > 0 || homeZoneName) && (
+        <div className="box my-4">
+          <h2 className="bg-brown-700 text-base text-center p-1">Inventory</h2>
+          <div className="bg-brown-700 text-brown-100 p-2 text-sm">
+            {homeZoneName && (
+              <p className="mb-1">
+                <strong>Works at:</strong> {homeZoneName}
+              </p>
+            )}
+            {inventory.gold > 0 && (
+              <p className="mb-1">
+                <span className="mr-1">{'\uD83E\uDE99'}</span>
+                <strong>{inventory.gold}</strong> gold
+              </p>
+            )}
+            {itemCounts.size > 0 && (
+              <div className="flex flex-wrap gap-2 mt-1">
+                {[...itemCounts.entries()].map(([type, count]) => {
+                  const itemDef = ITEM_TYPES.find((t) => t.id === type);
+                  return (
+                    <span
+                      key={type}
+                      className="inline-flex items-center bg-brown-800 rounded px-1.5 py-0.5"
+                      title={itemDef?.description ?? type}
+                    >
+                      <span className="mr-1">{itemDef?.emoji ?? '?'}</span>
+                      {count > 1 && <span className="text-xs">{count}</span>}
+                    </span>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
       {!isMe && goals && (goals.currentTask || goals.shortTerm.length > 0) && (
         <div className="box my-4">
           <h2 className="bg-brown-700 text-base text-center p-1">Goals</h2>
@@ -310,9 +372,9 @@ export default function PlayerDetails({
 }
 
 function sentimentEmoji(val: number): string {
-  if (val > 0.5) return '💚';
-  if (val > 0.1) return '🙂';
-  if (val > -0.1) return '😐';
-  if (val > -0.5) return '😟';
-  return '💔';
+  if (val > 0.5) return '\uD83D\uDC9A';
+  if (val > 0.1) return '\uD83D\uDE42';
+  if (val > -0.1) return '\uD83D\uDE10';
+  if (val > -0.5) return '\uD83D\uDE1F';
+  return '\uD83D\uDC94';
 }

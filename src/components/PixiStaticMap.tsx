@@ -1,6 +1,6 @@
 import { PixiComponent, applyDefaultProps } from '@pixi/react';
 import * as PIXI from 'pixi.js';
-import { AnimatedSprite, WorldMap } from '../../convex/aiTown/worldMap';
+import { AnimatedSprite, WorldMap, Zone } from '../../convex/aiTown/worldMap';
 import * as campfire from '../../data/animations/campfire.json';
 import * as gentlesparkle from '../../data/animations/gentlesparkle.json';
 import * as gentlewaterfall from '../../data/animations/gentlewaterfall.json';
@@ -21,6 +21,44 @@ const animations = {
   'gentlesplash.json': { spritesheet: gentlesplash,
     url: '/ai-town/assets/spritesheets/gentlewaterfall32.png',},
 };
+
+const ZONE_COLORS: Record<string, number> = {
+  building: 0x4488cc,
+  outdoor: 0x44cc66,
+  shop: 0xccaa44,
+};
+
+function renderZoneOverlays(container: PIXI.Container, zones: Zone[], tileDim: number) {
+  for (const zone of zones) {
+    const color = ZONE_COLORS[zone.type] ?? 0x888888;
+
+    // Semi-transparent zone rectangle
+    const overlay = new PIXI.Graphics();
+    overlay.beginFill(color, 0.12);
+    overlay.lineStyle(1, color, 0.4);
+    overlay.drawRect(
+      zone.bounds.x * tileDim,
+      zone.bounds.y * tileDim,
+      zone.bounds.width * tileDim,
+      zone.bounds.height * tileDim,
+    );
+    overlay.endFill();
+    container.addChild(overlay);
+
+    // Zone name label
+    const label = new PIXI.Text(zone.name, {
+      fontSize: 10,
+      fill: color,
+      fontWeight: 'bold',
+      align: 'center',
+    });
+    label.anchor.set(0.5, 0);
+    label.x = (zone.bounds.x + zone.bounds.width / 2) * tileDim;
+    label.y = zone.bounds.y * tileDim - 12;
+    label.alpha = 0.7;
+    container.addChild(label);
+  }
+}
 
 export const PixiStaticMap = PixiComponent('StaticMap', {
   create: (props: { map: WorldMap; [k: string]: any }) => {
@@ -103,6 +141,11 @@ export const PixiStaticMap = PixiComponent('StaticMap', {
           pixiSprite.play();
         }
       });
+    }
+
+    // Render zone overlays after tiles
+    if (map.zones.length > 0) {
+      renderZoneOverlays(container, map.zones, map.tileDim);
     }
 
     container.x = 0;

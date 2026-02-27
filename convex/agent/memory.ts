@@ -46,7 +46,7 @@ export async function rememberConversation(
       role: 'user',
       content: `You are ${player.name}, and you just finished a conversation with ${otherPlayer.name}. I would
       like you to summarize the conversation from ${player.name}'s perspective, using first-person pronouns like
-      "I," and add if you liked or disliked this interaction.`,
+      "I," and add if you liked or disliked this interaction. If any items were traded, offered, or discussed, mention that in the summary.`,
     },
   ];
   const authors = new Set<GameId<'players'>>();

@@ -227,6 +227,19 @@ export const gameDescriptions = query({
   },
 });
 
+export const worldItems = query({
+  args: {
+    worldId: v.id('worlds'),
+  },
+  handler: async (ctx, args) => {
+    const world = await ctx.db.get(args.worldId);
+    if (!world) {
+      return [];
+    }
+    return world.items ?? [];
+  },
+});
+
 export const previousConversation = query({
   args: {
     worldId: v.id('worlds'),

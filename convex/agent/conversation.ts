@@ -18,7 +18,7 @@ export async function startConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, agent, otherAgent, lastConversation, agentGoals } =
+  const { player, otherPlayer, agent, otherAgent, lastConversation, agentGoals, playerInventory } =
     await ctx.runQuery(selfInternal.queryPromptData, {
       worldId,
       playerId,
@@ -49,7 +49,7 @@ export async function startConversationMessage(
   const prompt = [
     `You are ${player.name}, and you just started a conversation with ${otherPlayer.name}.`,
   ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null, agentGoals));
+  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null, agentGoals, playerInventory));
   prompt.push(...previousConversationPrompt(otherPlayer, lastConversation));
   prompt.push(...relatedMemoriesPrompt(allMemories));
   if (memoryWithOtherPlayer) {
@@ -87,15 +87,13 @@ export async function continueConversationMessage(
   playerId: GameId<'players'>,
   otherPlayerId: GameId<'players'>,
 ): Promise<string> {
-  const { player, otherPlayer, conversation, agent, otherAgent, agentGoals } = await ctx.runQuery(
-    selfInternal.queryPromptData,
-    {
+  const { player, otherPlayer, conversation, agent, otherAgent, agentGoals, playerInventory } =
+    await ctx.runQuery(selfInternal.queryPromptData, {
       worldId,
       playerId,
       otherPlayerId,
       conversationId,
-    },
-  );
+    });
   const now = Date.now();
   const started = new Date(conversation.created);
 
@@ -111,7 +109,7 @@ export async function continueConversationMessage(
     `You are ${player.name}, and you're currently in a conversation with ${otherPlayer.name}.`,
     `The conversation started at ${started.toLocaleString()}. It's now ${now.toLocaleString()}.`,
   ];
-  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null, agentGoals));
+  prompt.push(...agentPrompts(otherPlayer, agent, otherAgent ?? null, agentGoals, playerInventory));
   prompt.push(...relatedMemoriesPrompt(memories));
   prompt.push(
     `Below is the current chat history between you and ${otherPlayer.name}.`,
@@ -196,6 +194,7 @@ function agentPrompts(
   agent: { identity: string; plan: string } | null,
   otherAgent: { identity: string; plan: string } | null,
   goals?: Doc<'agentGoals'> | null,
+  playerInventory?: { inventory: string[]; gold: number },
 ): string[] {
   const prompt = [];
   if (agent) {
@@ -212,6 +211,22 @@ function agentPrompts(
       }
     } else {
       prompt.push(`Your goals for the conversation: ${agent.plan}`);
+    }
+  }
+  // Add inventory context
+  if (playerInventory) {
+    if (playerInventory.gold > 0) {
+      prompt.push(`You have ${playerInventory.gold} gold coins.`);
+    }
+    if (playerInventory.inventory.length > 0) {
+      const itemCounts = new Map<string, number>();
+      for (const item of playerInventory.inventory) {
+        itemCounts.set(item, (itemCounts.get(item) ?? 0) + 1);
+      }
+      const itemList = [...itemCounts.entries()]
+        .map(([type, count]) => (count > 1 ? `${count} ${type}s` : `a ${type}`))
+        .join(', ');
+      prompt.push(`You are carrying: ${itemList}. You can mention or offer items in conversation.`);
     }
   }
   if (otherAgent) {
@@ -371,6 +386,10 @@ export const queryPromptData = internalQuery({
       },
       lastConversation,
       agentGoals,
+      playerInventory: {
+        inventory: player.inventory ?? [],
+        gold: player.gold ?? 0,
+      },
     };
   },
 });

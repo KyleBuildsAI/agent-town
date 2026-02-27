@@ -128,6 +128,12 @@ export const agentDoSomething = internalAction({
       }
     }
 
+    // Load agent description for zone/schedule data
+    const agentDesc = await ctx.runQuery(internal.agent.goals.loadAgentDescription, {
+      worldId: args.worldId,
+      agentId: agent.id,
+    });
+
     // Don't try to start a new conversation if we were just in one.
     const justLeftConversation =
       agent.lastConversation && now < agent.lastConversation + CONVERSATION_COOLDOWN;
@@ -135,9 +141,17 @@ export const agentDoSomething = internalAction({
     const recentlyAttemptedInvite =
       agent.lastInviteAttempt && now < agent.lastInviteAttempt + CONVERSATION_COOLDOWN;
     const recentActivity = player.activity && now < player.activity.until + ACTIVITY_COOLDOWN;
-    // Decide whether to do an activity or wander somewhere.
+
+    // Get current time of day and zone info
+    const timeOfDay = getTimeOfDay(now);
+    const currentZone = map.getZoneAt(Math.floor(player.position.x), Math.floor(player.position.y));
+    const isAtHomeZone = agentDesc?.homeZone && currentZone?.id === agentDesc.homeZone;
+
+    // Decide whether to do an activity or move somewhere.
     if (!player.pathfinding) {
       if (recentActivity || justLeftConversation) {
+        // Choose a zone-aware destination instead of random wandering
+        const destination = chooseDestination(map, agentDesc, timeOfDay);
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -145,13 +159,26 @@ export const agentDoSomething = internalAction({
           args: {
             operationId: args.operationId,
             agentId: agent.id,
-            destination: wanderDestination(map),
+            destination,
           },
         });
         return;
       } else {
-        // Select activity based on current goals (keyword matching, no LLM call)
-        const activity = selectActivityForGoals(agentGoals);
+        // Select activity based on zone and profession
+        const activity = selectActivityForAgent(agentGoals, agentDesc, currentZone);
+
+        // Check if there's a nearby item matching profession to pick up
+        let pickUpItemId: string | undefined;
+        if (isAtHomeZone && map.zones.length > 0) {
+          const nearbyItem = findNearbyProfessionItem(player, agentDesc, args);
+          if (nearbyItem) {
+            pickUpItemId = nearbyItem;
+          }
+        }
+
+        // Earn gold when doing profession activity at home zone
+        const earnAmount = isAtHomeZone ? 3 + Math.floor(Math.random() * 5) : undefined;
+
         await sleep(Math.random() * 1000);
         await ctx.runMutation(api.aiTown.main.sendInput, {
           worldId: args.worldId,
@@ -164,6 +191,8 @@ export const agentDoSomething = internalAction({
               emoji: activity.emoji,
               until: Date.now() + activity.duration,
             },
+            earnAmount,
+            pickUpItemId,
           },
         });
         return;
@@ -194,6 +223,103 @@ export const agentDoSomething = internalAction({
     });
   },
 });
+
+function getTimeOfDay(now: number): 'morning' | 'afternoon' | 'evening' | 'night' {
+  const hour = new Date(now).getHours();
+  if (hour >= 6 && hour < 12) return 'morning';
+  if (hour >= 12 && hour < 18) return 'afternoon';
+  if (hour >= 18 && hour < 22) return 'evening';
+  return 'night';
+}
+
+function chooseDestination(
+  map: WorldMap,
+  agentDesc: { homeZone?: string; schedule?: { morning: string; afternoon: string; evening: string } } | null,
+  timeOfDay: 'morning' | 'afternoon' | 'evening' | 'night',
+): { x: number; y: number } {
+  if (!agentDesc?.schedule || !agentDesc?.homeZone || map.zones.length === 0) {
+    return wanderDestination(map);
+  }
+
+  let targetZoneId: string | undefined;
+
+  if (timeOfDay === 'night') {
+    // Night: wander randomly
+    return wanderDestination(map);
+  } else if (timeOfDay === 'morning') {
+    targetZoneId = agentDesc.schedule.morning;
+  } else if (timeOfDay === 'afternoon') {
+    // 60% stay at scheduled zone, 40% visit random zone
+    if (Math.random() < 0.6) {
+      targetZoneId = agentDesc.schedule.afternoon;
+    } else {
+      const randomZone = map.zones[Math.floor(Math.random() * map.zones.length)];
+      targetZoneId = randomZone.id;
+    }
+  } else {
+    // Evening: go to social zones
+    targetZoneId = agentDesc.schedule.evening;
+  }
+
+  const zone = map.zones.find((z) => z.id === targetZoneId);
+  if (!zone) {
+    return wanderDestination(map);
+  }
+
+  // Pick a random point within the zone bounds
+  return {
+    x: zone.bounds.x + Math.floor(Math.random() * zone.bounds.width),
+    y: zone.bounds.y + Math.floor(Math.random() * zone.bounds.height),
+  };
+}
+
+function selectActivityForAgent(
+  agentGoals: { goals: { currentTask?: { description: string } } } | null,
+  agentDesc: { homeZone?: string; professionActivities?: string[] } | null,
+  currentZone: { id: string } | undefined,
+) {
+  // At home zone: use profession-specific activities
+  if (
+    currentZone &&
+    agentDesc?.homeZone === currentZone.id &&
+    agentDesc?.professionActivities?.length
+  ) {
+    const profActivity =
+      agentDesc.professionActivities[
+        Math.floor(Math.random() * agentDesc.professionActivities.length)
+      ];
+    const match = ACTIVITIES.find((a) => a.description === profActivity);
+    if (match) return match;
+  }
+
+  // At other zones: zone-appropriate activities
+  if (currentZone) {
+    const zoneActivities = getZoneActivities(currentZone.id);
+    if (zoneActivities.length > 0) {
+      return zoneActivities[Math.floor(Math.random() * zoneActivities.length)];
+    }
+  }
+
+  // Fallback: goal-based selection
+  return selectActivityForGoals(agentGoals);
+}
+
+function getZoneActivities(zoneId: string) {
+  const mapping: Record<string, string[]> = {
+    library: ['reading a book', 'reading ancient texts'],
+    bakery: ['cooking', 'kneading dough'],
+    garden: ['gardening', 'tending seedlings'],
+    park: ['meditating', 'daydreaming'],
+    town_square: ['daydreaming', 'writing in a journal'],
+    smithy: ['working on a project', 'hammering hot metal'],
+    art_studio: ['sketching', 'painting a canvas'],
+    school: ['reading a book', 'preparing lessons'],
+    trading_post: ['appraising goods', 'working on a project'],
+    town_hall: ['writing in a journal', 'reviewing town proposals'],
+  };
+  const descs = mapping[zoneId] ?? [];
+  return ACTIVITIES.filter((a) => descs.includes(a.description));
+}
 
 function selectActivityForGoals(
   agentGoals: { goals: { currentTask?: { description: string } } } | null,
@@ -226,6 +352,20 @@ function selectActivityForGoals(
     }
   }
   return ACTIVITIES[Math.floor(Math.random() * ACTIVITIES.length)];
+}
+
+function findNearbyProfessionItem(
+  player: { position: { x: number; y: number }; inventory?: string[] },
+  agentDesc: { homeZone?: string } | null,
+  args: { map: any },
+): string | undefined {
+  // The world items are not directly available in the action args,
+  // but they are part of the serialized world. We check items passed
+  // via the map's zone spawnItems to see if there's a relevant item nearby.
+  // Since world items aren't passed to the action, we skip this for now
+  // and let the cron handle spawning. Items get picked up via the
+  // pickUpItem input from the frontend or future agent logic.
+  return undefined;
 }
 
 function wanderDestination(worldMap: WorldMap) {

@@ -1,5 +1,5 @@
 import { v } from 'convex/values';
-import { agentId, conversationId, parseGameId } from './ids';
+import { agentId, conversationId, parseGameId, playerId } from './ids';
 import { Player, activity } from './player';
 import { Conversation, conversationInputs } from './conversation';
 import { movePlayer } from './movement';
@@ -36,10 +36,13 @@ export const agentInputs = {
   finishDoSomething: inputHandler({
     args: {
       operationId: v.string(),
-      agentId: v.id('agents'),
+      agentId,
       destination: v.optional(point),
-      invitee: v.optional(v.id('players')),
+      invitee: v.optional(playerId),
       activity: v.optional(activity),
+      // Economy extensions
+      earnAmount: v.optional(v.number()),
+      pickUpItemId: v.optional(v.string()),
     },
     handler: (game, now, args) => {
       const agentId = parseGameId('agents', args.agentId);
@@ -70,6 +73,19 @@ export const agentInputs = {
       }
       if (args.activity) {
         player.activity = args.activity;
+      }
+      // Apply gold earning
+      if (args.earnAmount && args.earnAmount > 0) {
+        player.gold += args.earnAmount;
+      }
+      // Apply item pickup
+      if (args.pickUpItemId) {
+        const itemIdx = game.world.items.findIndex((i) => i.id === args.pickUpItemId);
+        if (itemIdx !== -1) {
+          const item = game.world.items[itemIdx];
+          game.world.items.splice(itemIdx, 1);
+          player.inventory.push(item.type);
+        }
       }
       return null;
     },
@@ -147,8 +163,16 @@ export const agentInputs = {
           agentId: agentId,
           identity: description.identity,
           plan: description.plan,
+          homeZone: description.homeZone,
+          professionActivities: description.professionActivities,
+          schedule: description.schedule,
         }),
       );
+      // Give agent starting gold
+      const player = game.world.players.get(playerId);
+      if (player) {
+        player.gold = 10 + Math.floor(Math.random() * 11); // 10-20 gold
+      }
       return { agentId };
     },
   }),
